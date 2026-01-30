@@ -1,0 +1,53 @@
+name: RoadTripTracker
+options:
+  bundleIdPrefix: com.onezee
+  deploymentTarget:
+    iOS: "17.0"
+  xcodeVersion: "16.0"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    TARGETED_DEVICE_FAMILY: "1"
+
+targets:
+  RoadTripTracker:
+    type: application
+    platform: iOS
+    sources:
+      - path: RoadTripTracker
+        excludes:
+          - "**/*.xcassets/*"
+          - Info.plist
+      - path: RoadTripTracker/Resources/Assets.xcassets
+        type: asset
+    configFiles:
+      Debug: Local.xcconfig
+      Release: Local.xcconfig
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.onezee.RoadTripTracker
+        CODE_SIGN_STYLE: Automatic
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: RoadTripTracker/Info.plist
+        INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription: "Road Trip Tracker needs access to your location to record your trips, even when the app is in the background."
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "Road Trip Tracker needs access to your location to show your position on the map and record trips."
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_CFBundleDisplayName: "Trip Tracker"
+    entitlements:
+      path: RoadTripTracker/RoadTripTracker.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+
+  RoadTripTrackerTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: RoadTripTrackerTests
+    dependencies:
+      - target: RoadTripTracker
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.onezee.RoadTripTrackerTests
