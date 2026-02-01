@@ -28,8 +28,7 @@ struct TrackingView: View {
             .mapControls { }
             .ignoresSafeArea()
             .onMapCameraChange(frequency: .continuous) { context in
-                viewModel.isFollowingUser = false
-                viewModel.updateMapHeading(context.camera.heading)
+                viewModel.handleMapCameraChange(context)
             }
 
             // UI overlays
@@ -54,17 +53,12 @@ struct TrackingView: View {
 
                 // Controls row above HUD
                 HStack(alignment: .bottom) {
-                    CompassButton(heading: viewModel.compassHeading) {
-                        viewModel.resetMapNorth()
-                    }
-                    .padding(.leading, 16)
-
                     Spacer()
 
-                    Button(action: { viewModel.centerOnUser() }) {
-                        Image(systemName: viewModel.isFollowingUser ? "location.fill" : "location")
+                    Button(action: { viewModel.toggleLocationMode() }) {
+                        Image(systemName: viewModel.locationMode != .none ? "location.fill" : "location")
                             .font(.body.weight(.medium))
-                            .foregroundStyle(viewModel.isFollowingUser ? .blue : .primary)
+                            .foregroundStyle(viewModel.locationMode != .none ? .blue : .primary)
                             .frame(width: 44, height: 44)
                             .background(.ultraThinMaterial)
                             .clipShape(RoundedRectangle(cornerRadius: 10))
@@ -147,51 +141,6 @@ private struct UserArrow: View {
     }
 }
 
-// MARK: - Compass button with continuous rotation (no jumps)
-
-private struct CompassButton: View {
-    let heading: Double // continuous (unwrapped) angle
-    let onTap: () -> Void
-
-    var body: some View {
-        Button(action: onTap) {
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .frame(width: 44, height: 44)
-
-                VStack(spacing: 0) {
-                    CompassTriangle()
-                        .fill(.red)
-                        .frame(width: 8, height: 10)
-                    CompassTriangle()
-                        .fill(.white)
-                        .frame(width: 8, height: 10)
-                        .rotationEffect(.degrees(180))
-                }
-                .rotationEffect(.degrees(-heading))
-
-                Text("N")
-                    .font(.system(size: 8, weight: .bold))
-                    .foregroundStyle(.red)
-                    .offset(y: -16)
-                    .rotationEffect(.degrees(-heading))
-            }
-            .animation(.easeOut(duration: 0.15), value: heading)
-        }
-    }
-}
-
-private struct CompassTriangle: Shape {
-    func path(in rect: CGRect) -> Path {
-        var path = Path()
-        path.move(to: CGPoint(x: rect.midX, y: rect.minY))
-        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
-        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
-        path.closeSubpath()
-        return path
-    }
-}
 
 private struct DirectionCone: Shape {
     func path(in rect: CGRect) -> Path {

@@ -20,6 +20,7 @@ final class LocationService: NSObject, ObservableObject {
 
     private let maxAccuracy: Double = 50.0 // meters
     private let maxSpeedMs: Double = 83.3 // ~300 km/h
+    private let minSpeedThreshold: Double = 1.5 // m/s (~5.4 km/h) - speeds below this are considered stationary
 
     // Simulation
     private var simulatedCoordinate: CLLocationCoordinate2D?
@@ -31,12 +32,12 @@ final class LocationService: NSObject, ObservableObject {
         super.init()
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation
-        locationManager.distanceFilter = 5
+        locationManager.distanceFilter = kCLDistanceFilterNone // Update on every location change for smooth tracking
         locationManager.activityType = .automotiveNavigation
         locationManager.allowsBackgroundLocationUpdates = true
         locationManager.pausesLocationUpdatesAutomatically = false
         locationManager.showsBackgroundLocationIndicator = true
-        locationManager.headingFilter = 5 // update every 5 degrees
+        locationManager.headingFilter = 1 // Update every 1 degree for smoother heading
     }
 
     func requestPermission() {
@@ -154,7 +155,12 @@ final class LocationService: NSObject, ObservableObject {
         }
 
         currentLocation = filtered
-        currentSpeed = max(0, filtered.speed)
+        
+        // Filter out low speeds (GPS noise when stationary)
+        // If speed is below threshold, treat as stationary (0 m/s)
+        let rawSpeed = max(0, filtered.speed)
+        currentSpeed = rawSpeed < minSpeedThreshold ? 0 : rawSpeed
+        
         currentAltitude = filtered.altitude
         currentCourse = filtered.course
 

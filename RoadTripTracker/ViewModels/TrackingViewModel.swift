@@ -2,6 +2,12 @@ import SwiftUI
 import Combine
 import MapKit
 
+enum LocationTrackingMode {
+    case none           // Обычный режим - камера не следует
+    case centered       // Зафиксировано на пользователе (первое нажатие)
+    case following      // Режим следования (второе нажатие)
+}
+
 final class TrackingViewModel: ObservableObject {
     @Published var speed: Double = 0 // km/h
     @Published var altitude: Double = 0 // meters
@@ -10,10 +16,19 @@ final class TrackingViewModel: ObservableObject {
     @Published var isRecording = false
     @Published var routeCoordinates: [CLLocationCoordinate2D] = []
     @Published var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
-    @Published var isFollowingUser = true
+    @Published var locationMode: LocationTrackingMode = .none
     @Published var heading: Double = 0 // raw degrees from device
     @Published var mapHeading: Double = 0 // raw map camera rotation
     @Published var userCoordinate: CLLocationCoordinate2D? // always-updated position for arrow
+    
+    // Computed property for backward compatibility
+    var isFollowingUser: Bool {
+        locationMode == .following
+    }
+    
+    // Track if camera update is programmatic (not user interaction)
+    private var isProgrammaticCameraUpdate = false
+    private var programmaticUpdateWorkItem: DispatchWorkItem?
 
     // Continuous (unwrapped) angles — never jump across 360/0 boundary
     @Published var continuousHeading: Double = 0
@@ -23,9 +38,6 @@ final class TrackingViewModel: ObservableObject {
     private var headingInitialized = false
     private var mapHeadingInitialized = false
 
-    var compassHeading: Double {
-        isFollowingUser ? continuousHeading : continuousMapHeading
-    }
 
     let locationService: LocationService
     let tripManager: TripManager
@@ -52,8 +64,31 @@ final class TrackingViewModel: ObservableObject {
         }
     }
 
-    func centerOnUser() {
-        isFollowingUser = true
+    func toggleLocationMode() {
+        // Cancel any pending reset of the flag
+        programmaticUpdateWorkItem?.cancel()
+        
+        switch locationMode {
+        case .none:
+            // Первое нажатие - центрируем на пользователе
+            locationMode = .centered
+            isProgrammaticCameraUpdate = true
+            centerCameraOnUser()
+            
+        case .centered:
+            // Второе нажатие - включаем режим следования
+            locationMode = .following
+            isProgrammaticCameraUpdate = true
+            // Камера уже центрирована, просто включаем автоматическое следование
+            
+        case .following:
+            // Третье нажатие - выключаем режим следования
+            locationMode = .none
+            isProgrammaticCameraUpdate = false
+        }
+    }
+    
+    private func centerCameraOnUser() {
         if let loc = locationService.currentLocation {
             withAnimation(.easeInOut(duration: 0.4)) {
                 cameraPosition = .camera(MapCamera(
@@ -69,22 +104,19 @@ final class TrackingViewModel: ObservableObject {
             }
         }
     }
-
-    func resetMapNorth() {
-        isFollowingUser = true
-        withAnimation(.easeInOut(duration: 0.4)) {
-            if let loc = locationService.currentLocation {
-                cameraPosition = .camera(MapCamera(
-                    centerCoordinate: loc.coordinate,
-                    distance: 1000,
-                    heading: 0,
-                    pitch: 0
-                ))
+    
+    func handleMapCameraChange(_ context: MapCameraUpdateContext) {
+        // Only treat as manual interaction if it wasn't a programmatic update
+        if !isProgrammaticCameraUpdate {
+            // This was a manual user interaction - reset to none mode
+            if locationMode != .none {
+                locationMode = .none
             }
         }
-        let turns = round(continuousMapHeading / 360)
-        continuousMapHeading = turns * 360
+        // If isProgrammaticCameraUpdate is true, we keep the mode as is
+        updateMapHeading(context.camera.heading)
     }
+
 
     func updateMapHeading(_ rawHeading: Double) {
         if !mapHeadingInitialized {
@@ -120,7 +152,11 @@ final class TrackingViewModel: ObservableObject {
         routeCoordinates = []
         tripManager.startTrip()
         isRecording = true
-        isFollowingUser = true
+        // Enable following mode when recording starts
+        if locationMode == .none {
+            locationMode = .following
+            isProgrammaticCameraUpdate = true
+        }
 
         timer = Timer.publish(every: 1, on: .main, in: .common)
             .autoconnect()
@@ -172,8 +208,12 @@ final class TrackingViewModel: ObservableObject {
                     self.routeCoordinates.append(location.coordinate)
                 }
 
-                // Smooth camera follow
-                if self.isFollowingUser {
+                // Smooth camera follow - only in following mode
+                if self.locationMode == .following {
+                    // Cancel any pending reset
+                    self.programmaticUpdateWorkItem?.cancel()
+                    
+                    self.isProgrammaticCameraUpdate = true
                     withAnimation(.easeOut(duration: 0.8)) {
                         self.cameraPosition = .camera(MapCamera(
                             centerCoordinate: location.coordinate,
@@ -182,6 +222,17 @@ final class TrackingViewModel: ObservableObject {
                             pitch: 0
                         ))
                     }
+                    // Reset flag after animation (with buffer for callbacks)
+                    // Only reset if we're still in follow mode
+                    let workItem = DispatchWorkItem { [weak self] in
+                        guard let self = self else { return }
+                        // Only reset if we're still following - if user manually moved map, mode will be .none
+                        if self.locationMode == .following {
+                            self.isProgrammaticCameraUpdate = false
+                        }
+                    }
+                    self.programmaticUpdateWorkItem = workItem
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
                 }
             }
             .store(in: &cancellables)
