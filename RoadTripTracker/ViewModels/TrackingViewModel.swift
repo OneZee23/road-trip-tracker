@@ -5,7 +5,34 @@ import MapKit
 enum LocationTrackingMode {
     case none           // Обычный режим - камера не следует
     case centered       // Зафиксировано на пользователе (первое нажатие)
-    case following      // Режим следования (второе нажатие)
+    case follow         // Режим следования (второе нажатие)
+    
+    /// SF Symbol иконка для текущего состояния
+    var iconName: String {
+        switch self {
+        case .none:
+            return "location"
+        case .centered:
+            return "location.fill"
+        case .follow:
+            return "location.north.line.fill"
+        }
+    }
+    
+    /// Цвет иконки
+    var iconColor: Color {
+        switch self {
+        case .none:
+            return .secondary
+        case .centered, .follow:
+            return .blue
+        }
+    }
+    
+    /// Активна ли кнопка (неактивна только в режиме none)
+    var isActive: Bool {
+        self != .none
+    }
 }
 
 final class TrackingViewModel: ObservableObject {
@@ -19,16 +46,29 @@ final class TrackingViewModel: ObservableObject {
     @Published var locationMode: LocationTrackingMode = .none
     @Published var heading: Double = 0 // raw degrees from device
     @Published var mapHeading: Double = 0 // raw map camera rotation
-    @Published var userCoordinate: CLLocationCoordinate2D? // always-updated position for arrow
+    @Published var userCoordinate: CLLocationCoordinate2D? // current user position for map marker
+    @Published var showLocationAlert = false
     
     // Computed property for backward compatibility
     var isFollowingUser: Bool {
-        locationMode == .following
+        locationMode == .follow
+    }
+    
+    /// Проверяет, доступна ли геолокация для отслеживания
+    var isLocationTrackingEnabled: Bool {
+        let authStatus = locationService.authorizationStatus
+        let hasLocation = locationService.currentLocation != nil
+        let isAuthorized = authStatus == .authorizedWhenInUse || authStatus == .authorizedAlways
+        
+        return isAuthorized && hasLocation
     }
     
     // Track if camera update is programmatic (not user interaction)
     private var isProgrammaticCameraUpdate = false
     private var programmaticUpdateWorkItem: DispatchWorkItem?
+    
+    // Сохранение текущего zoom пользователя
+    private var savedCameraDistance: Double = 1000 // метры, значение по умолчанию
 
     // Continuous (unwrapped) angles — never jump across 360/0 boundary
     @Published var continuousHeading: Double = 0
@@ -65,6 +105,12 @@ final class TrackingViewModel: ObservableObject {
     }
 
     func toggleLocationMode() {
+        // Проверка доступности геолокации
+        guard isLocationTrackingEnabled else {
+            showLocationAlert = true
+            return
+        }
+        
         // Cancel any pending reset of the flag
         programmaticUpdateWorkItem?.cancel()
         
@@ -77,11 +123,11 @@ final class TrackingViewModel: ObservableObject {
             
         case .centered:
             // Второе нажатие - включаем режим следования
-            locationMode = .following
+            locationMode = .follow
             isProgrammaticCameraUpdate = true
             // Камера уже центрирована, просто включаем автоматическое следование
             
-        case .following:
+        case .follow:
             // Третье нажатие - выключаем режим следования
             locationMode = .none
             isProgrammaticCameraUpdate = false
@@ -90,24 +136,25 @@ final class TrackingViewModel: ObservableObject {
     
     private func centerCameraOnUser() {
         if let loc = locationService.currentLocation {
-            withAnimation(.easeInOut(duration: 0.4)) {
+            withAnimation(.easeInOut(duration: 0.3)) {
                 cameraPosition = .camera(MapCamera(
                     centerCoordinate: loc.coordinate,
-                    distance: 1000,
+                    distance: savedCameraDistance,
                     heading: heading,
                     pitch: 0
                 ))
             }
         } else {
-            withAnimation(.easeInOut(duration: 0.4)) {
+            withAnimation(.easeInOut(duration: 0.3)) {
                 cameraPosition = .userLocation(fallback: .automatic)
             }
         }
     }
     
     func handleMapCameraChange(_ context: MapCameraUpdateContext) {
-        // Only treat as manual interaction if it wasn't a programmatic update
+        // Сохраняем текущий zoom пользователя (только если это не программное обновление)
         if !isProgrammaticCameraUpdate {
+            savedCameraDistance = context.camera.distance
             // This was a manual user interaction - reset to none mode
             if locationMode != .none {
                 locationMode = .none
@@ -154,7 +201,7 @@ final class TrackingViewModel: ObservableObject {
         isRecording = true
         // Enable following mode when recording starts
         if locationMode == .none {
-            locationMode = .following
+            locationMode = .follow
             isProgrammaticCameraUpdate = true
         }
 
@@ -188,6 +235,23 @@ final class TrackingViewModel: ObservableObject {
                 self?.updateHeading(raw)
             }
             .store(in: &cancellables)
+        
+        // Отслеживание изменений статуса авторизации
+        locationService.$authorizationStatus
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] status in
+                guard let self = self else { return }
+                // Если авторизация была отозвана, сбрасываем режим
+                // Но не сбрасываем при временной потере GPS-сигнала (координаты могут быть nil, но авторизация есть)
+                if status == .denied || status == .restricted {
+                    if self.locationMode != .none {
+                        self.locationMode = .none
+                    }
+                }
+                // При восстановлении авторизации режим follow автоматически продолжит работу
+                // когда появятся координаты (обрабатывается в locationSubject sink выше)
+            }
+            .store(in: &cancellables)
 
         tripManager.$activeTrip
             .receive(on: DispatchQueue.main)
@@ -199,17 +263,15 @@ final class TrackingViewModel: ObservableObject {
             .sink { [weak self] location in
                 guard let self else { return }
 
-                // Always update arrow position
-                withAnimation(.easeOut(duration: 0.8)) {
-                    self.userCoordinate = location.coordinate
-                }
+                // Update user position marker
+                self.userCoordinate = location.coordinate
 
                 if self.isRecording {
                     self.routeCoordinates.append(location.coordinate)
                 }
 
-                // Smooth camera follow - only in following mode
-                if self.locationMode == .following {
+                // Smooth camera follow - only in follow mode
+                if self.locationMode == .follow {
                     // Cancel any pending reset
                     self.programmaticUpdateWorkItem?.cancel()
                     
@@ -217,7 +279,7 @@ final class TrackingViewModel: ObservableObject {
                     withAnimation(.easeOut(duration: 0.8)) {
                         self.cameraPosition = .camera(MapCamera(
                             centerCoordinate: location.coordinate,
-                            distance: 1000,
+                            distance: self.savedCameraDistance,
                             heading: self.heading,
                             pitch: 0
                         ))
@@ -227,7 +289,7 @@ final class TrackingViewModel: ObservableObject {
                     let workItem = DispatchWorkItem { [weak self] in
                         guard let self = self else { return }
                         // Only reset if we're still following - if user manually moved map, mode will be .none
-                        if self.locationMode == .following {
+                        if self.locationMode == .follow {
                             self.isProgrammaticCameraUpdate = false
                         }
                     }

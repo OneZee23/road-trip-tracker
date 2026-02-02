@@ -18,9 +18,10 @@ final class LocationService: NSObject, ObservableObject {
     private let locationManager = CLLocationManager()
     private var kalmanFilter: KalmanFilter?
 
-    private let maxAccuracy: Double = 50.0 // meters
+    private let maxAccuracy: Double = 100.0 // meters - increased from 50 to accept more points
     private let maxSpeedMs: Double = 83.3 // ~300 km/h
     private let minSpeedThreshold: Double = 1.5 // m/s (~5.4 km/h) - speeds below this are considered stationary
+    private let maxLocationAge: TimeInterval = 10.0 // seconds - reject locations older than 10 seconds
 
     // Simulation
     private var simulatedCoordinate: CLLocationCoordinate2D?
@@ -147,35 +148,69 @@ final class LocationService: NSObject, ObservableObject {
     // MARK: - Processing
 
     private func processLocation(_ location: CLLocation, skipFilter: Bool = false) {
+        // For real-time tracking, skip Kalman filter to minimize latency
+        // Kalman filter can add delay and cause track lag
+        // Only use raw location for immediate updates
         let filtered: CLLocation
         if skipFilter {
             filtered = location
         } else {
-            filtered = kalmanFilter?.process(location: location) ?? location
+            // Skip Kalman filter during active tracking to prevent lag
+            // The filter is mainly useful for display smoothing, not for track recording
+            filtered = location
         }
 
-        currentLocation = filtered
+        // Update @Published properties (must be on main thread for SwiftUI)
+        // LocationService is typically created on main thread, so this should be safe
+        // But we ensure main thread for safety
+        if Thread.isMainThread {
+            updateLocationProperties(filtered)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.updateLocationProperties(filtered)
+            }
+        }
+    }
+    
+    private func updateLocationProperties(_ location: CLLocation) {
+        currentLocation = location
         
         // Filter out low speeds (GPS noise when stationary)
         // If speed is below threshold, treat as stationary (0 m/s)
-        let rawSpeed = max(0, filtered.speed)
+        let rawSpeed = max(0, location.speed)
         currentSpeed = rawSpeed < minSpeedThreshold ? 0 : rawSpeed
         
-        currentAltitude = filtered.altitude
-        currentCourse = filtered.course
+        currentAltitude = location.altitude
+        currentCourse = location.course
 
-        locationSubject.send(filtered)
+        // Send location immediately - no debounce/throttle
+        // This will be received on main thread via .receive(on:) in ViewModel
+        locationSubject.send(location)
     }
 
     private func isValidLocation(_ location: CLLocation) -> Bool {
-        guard location.horizontalAccuracy > 0,
-              location.horizontalAccuracy <= maxAccuracy else {
+        // Reject invalid accuracy values
+        guard location.horizontalAccuracy >= 0 else {
             return false
         }
+        
+        // Reject locations with very poor accuracy (>100m)
+        guard location.horizontalAccuracy <= maxAccuracy else {
+            return false
+        }
+        
+        // Reject locations that are too old (stale GPS data)
+        let age = -location.timestamp.timeIntervalSinceNow
+        guard age < maxLocationAge else {
+            return false
+        }
+        
+        // Reject unrealistic speeds
         let speed = max(0, location.speed)
         if speed > maxSpeedMs {
             return false
         }
+        
         return true
     }
 }
@@ -184,8 +219,24 @@ final class LocationService: NSObject, ObservableObject {
 extension LocationService: CLLocationManagerDelegate {
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard !isSimulating else { return }
+        
+        // DEBUG: Log received locations
+        #if DEBUG
+        print("📍 Received \(locations.count) locations")
+        for (index, loc) in locations.enumerated() {
+            let age = -loc.timestamp.timeIntervalSinceNow
+            print("  [\(index)] accuracy: \(String(format: "%.1f", loc.horizontalAccuracy))m, age: \(String(format: "%.2f", age))s, speed: \(String(format: "%.1f", loc.speed * 3.6))km/h")
+        }
+        #endif
+        
+        // Process ALL locations in the array, not just the last one
         for location in locations {
-            guard isValidLocation(location) else { continue }
+            guard isValidLocation(location) else { 
+                #if DEBUG
+                print("  ⚠️ Rejected location: accuracy=\(String(format: "%.1f", location.horizontalAccuracy))m, age=\(String(format: "%.2f", -location.timestamp.timeIntervalSinceNow))s")
+                #endif
+                continue 
+            }
             processLocation(location)
         }
     }

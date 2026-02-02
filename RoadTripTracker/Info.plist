@@ -2,6 +2,10 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Для отслеживания ваших поездок</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>Для отслеживания поездок в фоновом режиме</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>location</string>

@@ -126,7 +126,8 @@ final class TripManager: ObservableObject {
             entity.averageSpeed = entity.distance / elapsed
         }
 
-        // Update published trip
+        // Update published trip immediately
+        // This doesn't block track rendering which uses routeCoordinates in ViewModel
         activeTrip = Trip(
             id: entity.id!,
             startDate: entity.startDate!,
@@ -136,7 +137,12 @@ final class TripManager: ObservableObject {
             trackPoints: [] // don't load all points during tracking
         )
 
-        persistenceController.save()
+        // Save to CoreData asynchronously to avoid blocking location updates
+        // Track display uses routeCoordinates, not CoreData, so this doesn't affect rendering
+        // viewContext must be used on main thread, so we save asynchronously
+        DispatchQueue.main.async { [weak self] in
+            self?.persistenceController.save()
+        }
     }
 
     private func updateEntityStats(_ entity: TripEntity) {
