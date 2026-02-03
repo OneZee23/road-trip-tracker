@@ -41,13 +41,21 @@ final class TrackingViewModel: ObservableObject {
     @Published var distance: Double = 0 // km
     @Published var duration: String = "00:00"
     @Published var isRecording = false
-    @Published var routeCoordinates: [CLLocationCoordinate2D] = []
+    @Published var routeCoordinates: [CLLocationCoordinate2D] = [] // Для обратной совместимости
     @Published var cameraPosition: MapCameraPosition = .userLocation(fallback: .automatic)
     @Published var locationMode: LocationTrackingMode = .none
     @Published var heading: Double = 0 // raw degrees from device
     @Published var mapHeading: Double = 0 // raw map camera rotation
     @Published var userCoordinate: CLLocationCoordinate2D? // current user position for map marker
     @Published var showLocationAlert = false
+    
+    // Новая архитектура
+    @ObservedObject var locationManager: LocationManager
+    @ObservedObject var trackManager: SmoothTrackManager
+    let tripManager: TripManager
+    
+    // Для обратной совместимости
+    let locationService: LocationService
     
     // Computed property for backward compatibility
     var isFollowingUser: Bool {
@@ -56,11 +64,8 @@ final class TrackingViewModel: ObservableObject {
     
     /// Проверяет, доступна ли геолокация для отслеживания
     var isLocationTrackingEnabled: Bool {
-        let authStatus = locationService.authorizationStatus
-        let hasLocation = locationService.currentLocation != nil
-        let isAuthorized = authStatus == .authorizedWhenInUse || authStatus == .authorizedAlways
-        
-        return isAuthorized && hasLocation
+        let hasLocation = locationManager.currentLocation != nil
+        return hasLocation
     }
     
     // Track if camera update is programmatic (not user interaction)
@@ -78,15 +83,19 @@ final class TrackingViewModel: ObservableObject {
     private var headingInitialized = false
     private var mapHeadingInitialized = false
 
-
-    let locationService: LocationService
-    let tripManager: TripManager
     private var cancellables = Set<AnyCancellable>()
     private var timer: AnyCancellable?
 
     init() {
+        // Создаём LocationService для обратной совместимости
         self.locationService = LocationService()
-        self.tripManager = TripManager(locationService: locationService)
+        
+        // Инициализируем новую архитектуру
+        let manager = LocationManager()
+        self.locationManager = manager
+        self.trackManager = SmoothTrackManager()
+        self.tripManager = TripManager(locationManager: manager)
+        
         setupBindings()
     }
 
@@ -94,6 +103,8 @@ final class TrackingViewModel: ObservableObject {
         locationService.requestPermission()
         // Always start location + heading so arrow is visible immediately
         locationService.startPassiveUpdates()
+        // Также запускаем новый LocationManager
+        locationManager.startRealGPS()
     }
 
     func toggleRecording() {
@@ -135,7 +146,16 @@ final class TrackingViewModel: ObservableObject {
     }
     
     private func centerCameraOnUser() {
-        if let loc = locationService.currentLocation {
+        if let loc = locationManager.currentLocation {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                cameraPosition = .camera(MapCamera(
+                    centerCoordinate: loc.coordinate,
+                    distance: savedCameraDistance,
+                    heading: heading,
+                    pitch: 0
+                ))
+            }
+        } else if let loc = locationService.currentLocation {
             withAnimation(.easeInOut(duration: 0.3)) {
                 cameraPosition = .camera(MapCamera(
                     centerCoordinate: loc.coordinate,
@@ -197,6 +217,8 @@ final class TrackingViewModel: ObservableObject {
 
     private func startRecording() {
         routeCoordinates = []
+        trackManager.reset()
+        trackManager.startAnimation()
         tripManager.startTrip()
         isRecording = true
         // Enable following mode when recording starts
@@ -214,62 +236,36 @@ final class TrackingViewModel: ObservableObject {
 
     private func stopRecording() {
         tripManager.stopTrip()
+        trackManager.stopAnimation()
         isRecording = false
         timer?.cancel()
         timer = nil
     }
 
     private func setupBindings() {
-        locationService.$currentSpeed
+        // Подписка на обновления LocationManager
+        locationManager.$currentLocation
             .receive(on: DispatchQueue.main)
-            .map { $0 * 3.6 }
-            .assign(to: &$speed)
-
-        locationService.$currentAltitude
-            .receive(on: DispatchQueue.main)
-            .assign(to: &$altitude)
-
-        locationService.$currentHeading
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] raw in
-                self?.updateHeading(raw)
-            }
-            .store(in: &cancellables)
-        
-        // Отслеживание изменений статуса авторизации
-        locationService.$authorizationStatus
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] status in
-                guard let self = self else { return }
-                // Если авторизация была отозвана, сбрасываем режим
-                // Но не сбрасываем при временной потере GPS-сигнала (координаты могут быть nil, но авторизация есть)
-                if status == .denied || status == .restricted {
-                    if self.locationMode != .none {
-                        self.locationMode = .none
-                    }
-                }
-                // При восстановлении авторизации режим follow автоматически продолжит работу
-                // когда появятся координаты (обрабатывается в locationSubject sink выше)
-            }
-            .store(in: &cancellables)
-
-        tripManager.$activeTrip
-            .receive(on: DispatchQueue.main)
-            .compactMap { $0?.distanceKm }
-            .assign(to: &$distance)
-
-        locationService.locationSubject
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] location in
-                guard let self else { return }
-
+            .sink { [weak self] update in
+                guard let self = self, let update = update else { return }
+                
                 // Update user position marker
-                self.userCoordinate = location.coordinate
-
+                self.userCoordinate = update.coordinate
+                
+                // Update speed and altitude
+                self.speed = update.speed * 3.6 // km/h
+                self.altitude = 0 // LocationUpdate не содержит altitude, используем 0
+                
+                // Update heading
+                self.updateHeading(update.course)
+                
+                // Add point to smooth track manager
                 if self.isRecording {
-                    self.routeCoordinates.append(location.coordinate)
+                    self.trackManager.addPoint(update.coordinate)
+                    // Также обновляем routeCoordinates для обратной совместимости
+                    self.routeCoordinates.append(update.coordinate)
                 }
-
+                
                 // Smooth camera follow - only in follow mode
                 if self.locationMode == .follow {
                     // Cancel any pending reset
@@ -278,17 +274,15 @@ final class TrackingViewModel: ObservableObject {
                     self.isProgrammaticCameraUpdate = true
                     withAnimation(.easeOut(duration: 0.8)) {
                         self.cameraPosition = .camera(MapCamera(
-                            centerCoordinate: location.coordinate,
+                            centerCoordinate: update.coordinate,
                             distance: self.savedCameraDistance,
                             heading: self.heading,
                             pitch: 0
                         ))
                     }
                     // Reset flag after animation (with buffer for callbacks)
-                    // Only reset if we're still in follow mode
                     let workItem = DispatchWorkItem { [weak self] in
                         guard let self = self else { return }
-                        // Only reset if we're still following - if user manually moved map, mode will be .none
                         if self.locationMode == .follow {
                             self.isProgrammaticCameraUpdate = false
                         }
@@ -298,6 +292,41 @@ final class TrackingViewModel: ObservableObject {
                 }
             }
             .store(in: &cancellables)
+        
+        // Также слушаем старый LocationService для обратной совместимости
+        locationService.$currentSpeed
+            .receive(on: DispatchQueue.main)
+            .map { $0 * 3.6 }
+            .sink { [weak self] speed in
+                // Используем только если LocationManager не дал значение
+                if self?.locationManager.currentLocation == nil {
+                    self?.speed = speed
+                }
+            }
+            .store(in: &cancellables)
+
+        locationService.$currentAltitude
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] altitude in
+                if self?.locationManager.currentLocation == nil {
+                    self?.altitude = altitude
+                }
+            }
+            .store(in: &cancellables)
+
+        locationService.$currentHeading
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] raw in
+                if self?.locationManager.currentLocation == nil {
+                    self?.updateHeading(raw)
+                }
+            }
+            .store(in: &cancellables)
+
+        tripManager.$activeTrip
+            .receive(on: DispatchQueue.main)
+            .compactMap { $0?.distanceKm }
+            .assign(to: &$distance)
 
         tripManager.$isRecording
             .receive(on: DispatchQueue.main)

@@ -7,16 +7,34 @@ final class TripManager: ObservableObject {
     @Published var activeTrip: Trip?
     @Published var isRecording = false
 
-    private let locationService: LocationService
+    private var locationManager: LocationManager?
+    private let locationService: LocationService?
     private let persistenceController: PersistenceController
     private var cancellables = Set<AnyCancellable>()
     private var activeTripEntity: TripEntity?
     private var lastLocation: CLLocation?
 
-    init(locationService: LocationService, persistenceController: PersistenceController = .shared) {
-        self.locationService = locationService
+    init(locationManager: LocationManager, persistenceController: PersistenceController = .shared) {
+        self.locationManager = locationManager
+        self.locationService = nil
         self.persistenceController = persistenceController
 
+        // Подписываемся на обновления позиции
+        locationManager.$currentLocation
+            .compactMap { $0 }
+            .sink { [weak self] (update: LocationUpdate) in
+                self?.handleNewLocation(update.toCLLocation())
+            }
+            .store(in: &cancellables)
+    }
+    
+    // Обратная совместимость со старым LocationService
+    init(locationService: LocationService, persistenceController: PersistenceController = .shared) {
+        self.locationManager = nil
+        self.locationService = locationService
+        self.persistenceController = persistenceController
+        
+        // Подписываемся на старый LocationService
         locationService.locationSubject
             .sink { [weak self] location in
                 self?.handleNewLocation(location)
@@ -42,11 +60,19 @@ final class TripManager: ObservableObject {
         isRecording = true
         lastLocation = nil
 
-        locationService.startTracking()
+        if let locationManager = locationManager {
+            locationManager.startTracking()
+        } else if let locationService = locationService {
+            locationService.startTracking()
+        }
     }
 
     func stopTrip() {
-        locationService.stopTracking()
+        if let locationManager = locationManager {
+            locationManager.stopTracking()
+        } else if let locationService = locationService {
+            locationService.stopTracking()
+        }
         isRecording = false
 
         guard let entity = activeTripEntity else { return }
