@@ -129,11 +129,14 @@ struct TrackingView: View {
                             .background(.orange.opacity(0.2))
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                             
-                            // Джойстик
-                            JoystickViewNoReturn(value: $joystickValue)
-                                .onChange(of: joystickValue) { _, newValue in
-                                    viewModel.locationManager.joystickInput = newValue
-                                }
+                            // Джойстик с ориентацией по курсу
+                            JoystickViewNoReturn(
+                                value: $joystickValue,
+                                currentCourse: viewModel.locationManager.currentLocation?.course ?? 0
+                            )
+                            .onChange(of: joystickValue) { _, newValue in
+                                viewModel.locationManager.joystickInput = newValue
+                            }
                         }
                         .padding(.leading, 16)
                         .padding(.bottom, 200) // above HUD + tab bar

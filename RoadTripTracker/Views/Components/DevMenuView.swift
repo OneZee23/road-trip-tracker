@@ -319,6 +319,7 @@ struct JoystickView: View {
 /// Вариант джойстика без автовозврата (для постоянной скорости в симуляции)
 struct JoystickViewNoReturn: View {
     @Binding var value: CGPoint // от -1 до 1
+    var currentCourse: Double = 0 // Текущий курс движения (0-360 градусов)
     
     let size: CGFloat = 120
     let knobSize: CGFloat = 50
@@ -344,42 +345,61 @@ struct JoystickViewNoReturn: View {
                 )
                 .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 5)
             
-            // Направляющие линии
+            // Направляющие линии (ориентированы по курсу)
             Path { path in
-                path.move(to: CGPoint(x: size/2, y: 10))
-                path.addLine(to: CGPoint(x: size/2, y: size - 10))
-                path.move(to: CGPoint(x: 10, y: size/2))
-                path.addLine(to: CGPoint(x: size - 10, y: size/2))
+                let center = size / 2
+                
+                // Вертикальная линия (направление движения)
+                path.move(to: CGPoint(x: center, y: 10))
+                path.addLine(to: CGPoint(x: center, y: size - 10))
+                
+                // Горизонтальная линия
+                path.move(to: CGPoint(x: 10, y: center))
+                path.addLine(to: CGPoint(x: size - 10, y: center))
             }
             .stroke(.white.opacity(0.3), lineWidth: 1.5)
             .frame(width: size, height: size)
+            .rotationEffect(.degrees(-currentCourse), anchor: .center) // Поворачиваем по курсу
             
-            // Компасные направления
+            // Компасные направления (ориентированы по курсу)
             VStack(spacing: 0) {
+                // Север (вверху относительно курса)
                 Text("N")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .offset(y: -size/2 + 15)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .offset(y: -size/2 + 18)
                 Spacer()
+                // Юг
                 Text("S")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .offset(y: size/2 - 15)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .offset(y: size/2 - 18)
             }
             .frame(height: size)
+            .rotationEffect(.degrees(-currentCourse), anchor: .center)
             
             HStack(spacing: 0) {
+                // Запад
                 Text("W")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .offset(x: -size/2 + 15)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .offset(x: -size/2 + 18)
                 Spacer()
+                // Восток
                 Text("E")
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.6))
-                    .offset(x: size/2 - 15)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.7))
+                    .offset(x: size/2 - 18)
             }
             .frame(width: size)
+            .rotationEffect(.degrees(-currentCourse), anchor: .center)
+            
+            // Индикатор текущего направления движения (большая стрелка)
+            Image(systemName: "arrow.up")
+                .font(.system(size: 20, weight: .bold))
+                .foregroundStyle(.orange.opacity(0.8))
+                .offset(y: -size/2 + 25)
+                .rotationEffect(.degrees(-currentCourse), anchor: .center)
             
             // Ручка джойстика с градиентом
             ZStack {
@@ -394,9 +414,9 @@ struct JoystickViewNoReturn: View {
                     .frame(width: knobSize, height: knobSize)
                     .shadow(color: .black.opacity(0.4), radius: 8, x: 0, y: 4)
                 
-                // Индикатор направления
+                // Индикатор направления на ручке (показывает куда направлен джойстик)
                 Image(systemName: "arrow.up")
-                    .font(.system(size: 16, weight: .bold))
+                    .font(.system(size: 18, weight: .bold))
                     .foregroundStyle(.white)
             }
             .offset(knobOffset)

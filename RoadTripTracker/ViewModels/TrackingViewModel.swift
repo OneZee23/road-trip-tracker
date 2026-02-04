@@ -176,7 +176,8 @@ final class TrackingViewModel: ObservableObject {
         if !isProgrammaticCameraUpdate {
             savedCameraDistance = context.camera.distance
             // This was a manual user interaction - reset to none mode
-            if locationMode != .none {
+            // НО только если не идет запись - во время записи не сбрасываем режим следования
+            if locationMode != .none && !isRecording {
                 locationMode = .none
             }
         }
@@ -221,10 +222,33 @@ final class TrackingViewModel: ObservableObject {
         trackManager.startAnimation()
         tripManager.startTrip()
         isRecording = true
-        // Enable following mode when recording starts
-        if locationMode == .none {
-            locationMode = .follow
-            isProgrammaticCameraUpdate = true
+        
+        // ВСЕГДА включаем режим следования при старте записи
+        // Это важно для dev-режима, чтобы камера следила за симуляцией
+        locationMode = .follow
+        isProgrammaticCameraUpdate = true
+        
+        // Принудительно обновляем камеру на текущую позицию при старте записи
+        if let currentLoc = locationManager.currentLocation {
+            let cameraHeading = currentLoc.course >= 0 ? currentLoc.course : heading
+            withAnimation(.easeOut(duration: 0.5)) {
+                cameraPosition = .camera(MapCamera(
+                    centerCoordinate: currentLoc.coordinate,
+                    distance: savedCameraDistance,
+                    heading: cameraHeading,
+                    pitch: 0
+                ))
+            }
+            // Сбрасываем флаг после анимации
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+                guard let self = self else { return }
+                // Не сбрасываем флаг, если все еще в режиме следования
+                if self.locationMode == .follow {
+                    // Оставляем флаг для программных обновлений
+                } else {
+                    self.isProgrammaticCameraUpdate = false
+                }
+            }
         }
 
         timer = Timer.publish(every: 1, on: .main, in: .common)
@@ -267,19 +291,41 @@ final class TrackingViewModel: ObservableObject {
                 }
                 
                 // Smooth camera follow - only in follow mode
+                // В режиме записи всегда следим за позицией, если включен follow mode
                 if self.locationMode == .follow {
                     // Cancel any pending reset
                     self.programmaticUpdateWorkItem?.cancel()
                     
                     self.isProgrammaticCameraUpdate = true
-                    withAnimation(.easeOut(duration: 0.8)) {
+                    
+                    // Используем курс из обновления (для симуляции это важно)
+                    let cameraHeading = update.course >= 0 ? update.course : self.heading
+                    
+                    // В симуляции используем более быструю анимацию для плавности
+                    // Также делаем анимацию без задержек для более отзывчивого следования
+                    let animationDuration = self.locationManager.mode == .simulated ? 0.2 : 0.8
+                    
+                    // В симуляции обновляем камеру без анимации для мгновенного отклика
+                    if self.locationManager.mode == .simulated {
+                        // Без анимации для симуляции - более отзывчиво
                         self.cameraPosition = .camera(MapCamera(
                             centerCoordinate: update.coordinate,
                             distance: self.savedCameraDistance,
-                            heading: self.heading,
+                            heading: cameraHeading,
                             pitch: 0
                         ))
+                    } else {
+                        // С анимацией для реального GPS
+                        withAnimation(.easeOut(duration: animationDuration)) {
+                            self.cameraPosition = .camera(MapCamera(
+                                centerCoordinate: update.coordinate,
+                                distance: self.savedCameraDistance,
+                                heading: cameraHeading,
+                                pitch: 0
+                            ))
+                        }
                     }
+                    
                     // Reset flag after animation (with buffer for callbacks)
                     let workItem = DispatchWorkItem { [weak self] in
                         guard let self = self else { return }
@@ -288,7 +334,8 @@ final class TrackingViewModel: ObservableObject {
                         }
                     }
                     self.programmaticUpdateWorkItem = workItem
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
+                    let delay = self.locationManager.mode == .simulated ? 0.1 : animationDuration + 0.2
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: workItem)
                 }
             }
             .store(in: &cancellables)
